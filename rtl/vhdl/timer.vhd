@@ -91,11 +91,11 @@ begin
 timer_write : process( clk, rst, cs, rw, addr, data_in,
                        timer_reg, timer_ctrl, timer_count )
 begin
-  if clk'event and clk = '0' then
-    if rst = '1' then
-	   timer_reg <= "00000000";
-		timer_ctrl <= "00000000";
-    elsif cs = '1' and rw = '0' then
+  if rst = '1' then
+	 timer_reg <= "00000000";
+    timer_ctrl <= "00000000";
+  elsif clk'event and clk = '0' then
+    if cs = '1' and rw = '0' then
 	   if addr='0' then
 		  timer_reg <= data_in;
 		  timer_ctrl <= timer_ctrl;
@@ -119,8 +119,8 @@ begin
 		else
 		  timer_term <= timer_term;
 		end if;
-    end if;
-  end if;
+    end if;	-- cs
+  end if; -- rst / clk
 end process;
 
 --
@@ -144,11 +144,10 @@ end process;
 my_counter: process( clk, rst, timer_ctrl, timer_count, timer_in )
 variable timer_tmp : std_logic;
 begin
-  if clk'event and clk='0' then
-    if rst = '1' then
+  if rst = '1' then
 	   timer_count <= "00000000";
 		timer_tmp := '0';
-    else
+  elsif clk'event and clk='0' then
       if timer_ctrl( T_enab ) = '1' then
 		  if timer_in = '0' and timer_tmp = '1' then
 		    timer_tmp := '0';
@@ -168,7 +167,6 @@ begin
 		  timer_tmp := timer_tmp;
 	     timer_count <= timer_count;
 	   end if; -- timer_ctrl
-    end if; -- rst
   end if; -- clk
 end process;
 

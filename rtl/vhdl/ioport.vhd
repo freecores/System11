@@ -113,13 +113,13 @@ ioport_write : process( clk, rst, addr, cs, rw, data_in,
                         porta_data, portb_data,
 								porta_ddr, portb_ddr )
 begin
-  if clk'event and clk = '0' then
-    if rst = '1' then
-      porta_data <= "00000000";
-      portb_data <= "00000000";
-      porta_ddr <= "00000000";
-      portb_ddr <= "00000000";
-    elsif cs = '1' and rw = '0' then
+  if rst = '1' then
+    porta_data <= "00000000";
+    portb_data <= "00000000";
+    porta_ddr <= "00000000";
+    portb_ddr <= "00000000";
+  elsif clk'event and clk = '0' then
+    if cs = '1' and rw = '0' then
       case addr is
 	     when "00" =>
 		    porta_data <= data_in;

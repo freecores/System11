@@ -91,7 +91,6 @@ begin
 
 dat_write : process( clk, rst, addr_lo, cs, rw, data_in )
 begin
-  if clk'event and clk = '0' then
     if rst = '1' then
       dat_reg0 <= "00000000";
       dat_reg1 <= "00000001";
@@ -109,7 +108,7 @@ begin
       dat_reg13 <= "00001101";
       dat_reg14 <= "00001110";
       dat_reg15 <= "00001111";
-    else
+    elsif clk'event and clk = '0' then
 	   if cs = '1' and rw = '0' then
         case addr_lo is
 	     when "0000" =>
@@ -149,7 +148,6 @@ begin
 		  end case;
 	   end if;
 	 end if;
-  end if;
 end process;
 
 dat_read : process(  addr_hi,

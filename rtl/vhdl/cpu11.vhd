@@ -38,6 +38,11 @@
 -- Basic 6800 instructions working
 -- but not Divide and bit operations.
 --
+-- Version 1.1 - 4 April 2004
+-- Removed Test_alu and Test_cc signals
+--	Moved Dual operand execution into fetch state
+-- Fixed Indexed bit operators
+-- 
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -53,9 +58,7 @@ entity cpu11 is
 	   data_in:	 in  std_logic_vector(7 downto 0);
 	   data_out: out std_logic_vector(7 downto 0);
 		irq:      in  std_logic;
-		xirq:     in  std_logic;
-		test_alu: out std_logic_vector(15 downto 0);
-		test_cc:  out std_logic_vector(7 downto 0)
+		xirq:     in  std_logic
 		);
 end;
 
@@ -71,16 +74,16 @@ architecture CPU_ARCH of cpu11 is
   constant CBIT : integer := 0;
 
 	type state_type is (reset_state, fetch_state, decode_state,
-                       extended_state, indexed_state, direct_state, direct16_state, immediate16_state,
+                       extended_state, indexed_state, read8_state, read16_state, immediate16_state,
 	                    write8_state, write16_state,
 						     execute_state, halt_state, spin_state,
-						     exchange1_state, exchange2_state,
+						     exchange_state,
 						     mul_state, mulea_state, muld_state, mul0_state,
   							  idiv_state,
 							  div1_state, div2_state, div3_state, div4_state, div5_state,
 							  jmp_state, jsr_state, jsr1_state,
 						     branch_state, bsr_state, bsr1_state,
- 							  bitmask_state, brset_state, brclr_state, bset_state, bclr_state,
+ 							  bitmask_state, brset_state, brclr_state,
 							  rts_hi_state, rts_lo_state,
 							  int_pcl_state, int_pch_state,
 						     int_ixl_state, int_ixh_state,
@@ -92,7 +95,7 @@ architecture CPU_ARCH of cpu11 is
 						     rti_iyl_state, rti_iyh_state,
 						     rti_pcl_state, rti_pch_state,
 							  pula_state, psha_state, pulb_state, pshb_state,
-						     pulx_lo_state, pulx_hi_state, pshx_lo_state, pshx_hi_state,
+						     pulxy_lo_state, pulxy_hi_state, pshxy_lo_state, pshxy_hi_state,
 							  vect_lo_state, vect_hi_state );
 	type addr_type is (idle_ad, fetch_ad, read_ad, write_ad, push_ad, pull_ad, int_hi_ad, int_lo_ad );
 	type dout_type is ( acca_dout, accb_dout, cc_dout,
@@ -106,9 +109,9 @@ architecture CPU_ARCH of cpu11 is
 	type ix_type is (reset_ix, load_ix, pull_lo_ix, pull_hi_ix, latch_ix );
 	type iy_type is (reset_iy, load_iy, pull_lo_iy, pull_hi_iy, latch_iy );
 	type sp_type is (reset_sp, latch_sp, load_sp );
-	type pc_type is (reset_pc, latch_pc, load_pc, pull_lo_pc, pull_hi_pc );
+	type pc_type is (reset_pc, latch_pc, load_pc, pull_lo_pc, pull_hi_pc, incr_pc );
    type md_type is (reset_md, latch_md, load_md, fetch_first_md, fetch_next_md, shiftl_md );
-   type ea_type is (reset_ea, latch_ea, load_ea, fetch_first_ea, fetch_next_ea );
+   type ea_type is (reset_ea, latch_ea, load_ea, fetch_first_ea, fetch_next_ea, add_ix_ea, add_iy_ea );
 	type iv_type is (reset_iv, latch_iv, swi_iv, xirq_iv, irq_iv );
 	type count_type is (reset_count, latch_count, inc_count );
 	type left_type is (acca_left, accb_left, accd_left, md_left, ix_left, iy_left, pc_left, sp_left, ea_left );
@@ -317,6 +320,8 @@ begin
     case pc_ctrl is
 	 when reset_pc =>
 	   pc <= "0000000000000000";
+	 when incr_pc =>
+	   pc <= pc + "0000000000000001";
 	 when load_pc =>
 	   pc <= out_alu(15 downto 0);
 	 when pull_lo_pc =>
@@ -336,7 +341,7 @@ end process;
 --
 ----------------------------------
 
-ea_reg: process( clk, ea_ctrl, ea, out_alu, data_in )
+ea_reg: process( clk, ea_ctrl, ea, out_alu, data_in, xreg, yreg )
 begin
 
   if clk'event and clk = '0' then
@@ -349,6 +354,10 @@ begin
   	 when fetch_next_ea =>
 	   ea(15 downto 8) <= ea(7 downto 0);
       ea(7 downto 0)  <= data_in;
+    when add_ix_ea =>
+	   ea <= ea + xreg;
+    when add_iy_ea =>
+	   ea <= ea + yreg;
 	 when load_ea =>
 	   ea <= out_alu(15 downto 0);
 	 when others =>
@@ -422,7 +431,7 @@ begin
   if clk'event and clk = '0' then
     case op_ctrl is
 	 when reset_op =>
-	   op_code <= "00000001";
+	   op_code <= "00000001";	-- nop
   	 when fetch_op =>
       op_code <= data_in;
 	 when others =>
@@ -950,9 +959,6 @@ begin
 	 when others =>
 	   cc_out(SBIT) <= cc(SBIT);
 	 end case;
-
-	 test_alu <= out_alu;
-	 test_cc  <= cc_out;
 end process;
 
 
@@ -1053,51 +1059,467 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 			 -- either from the timer
 			 -- or from the external input.
 			 --
-          when fetch_state =>
-             acca_ctrl  <= latch_acca;
-             accb_ctrl  <= latch_accb;
-             ix_ctrl    <= latch_ix;
-             iy_ctrl    <= latch_iy;
-             sp_ctrl    <= latch_sp;
-             md_ctrl    <= latch_md;
-				 -- fetch the op code
-			    op_ctrl    <= fetch_op;
-             pre_ctrl   <= fetch_pre;
-             ea_ctrl    <= reset_ea;
-             addr_ctrl  <= fetch_ad;
-             dout_ctrl  <= md_lo_dout;
-		  	    iv_ctrl    <= latch_iv;
-				 count_ctrl <= reset_count;
-				 -- service non maskable interrupts
-			    if (xirq = '1') and (cc(XBIT) = '0') then
-               left_ctrl  <= acca_left;
-               right_ctrl <= zero_right;
-               alu_ctrl   <= alu_nop;
-               cc_ctrl    <= latch_cc;
-               pc_ctrl    <= latch_pc;
-			      next_state <= int_pcl_state;
-				 -- service maskable interrupts
-			    else
+           when fetch_state =>
+			      case op_code(7 downto 4) is
+					when "0000" | -- inherent operators
+					     "0001" | -- bit operators come here				        
+	                 "0010" | -- branch conditional
+	                 "0011" | -- stack operators
+	                 "0100" | -- acca single operand
+	                 "0101" | -- accb single operand
+	                 "0110" | -- indexed single op
+	                 "0111" => -- extended single op
+                 acca_ctrl  <= latch_acca;
+                 accb_ctrl  <= latch_accb;
+                 ix_ctrl    <= latch_ix;
+                 iy_ctrl    <= latch_iy;
+                 sp_ctrl    <= latch_sp;
+					  -- idle ALU
+                 left_ctrl  <= acca_left;
+					  right_ctrl <= zero_right;
+					  alu_ctrl   <= alu_nop;
+					  cc_ctrl    <= latch_cc;
+	            when "1000" | -- acca immediate
+	                 "1001" | -- acca direct
+	                 "1010" | -- acca indexed
+                    "1011" => -- acca extended
+				     case op_code(3 downto 0) is
+					  when "0000" => -- suba
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0001" => -- cmpa
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0010" => -- sbca
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sbc;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0011" => -- subd / cmpd
+					    left_ctrl   <= accd_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub16;
+						 cc_ctrl     <= load_cc;
+						 if (pre_byte = "00011010") or (pre_byte = "11001101") then
+						   -- CPD
+					      acca_ctrl   <= latch_acca;
+						   accb_ctrl   <= latch_accb;
+						 else
+						   -- SUBD
+					      acca_ctrl   <= load_hi_acca;
+						   accb_ctrl   <= load_accb;
+						 end if;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0100" => -- anda
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_and;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0101" => -- bita
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_and;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0110" => -- ldaa
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ld8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0111" => -- staa
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_st8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1000" => -- eora
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_eor;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1001" => -- adca
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_adc;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1010" => -- oraa
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ora;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1011" => -- adda
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_add8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1100" => -- cpx / cpy
+					    if (pre_byte = "00011000") or (pre_byte = "00011010") then
+							-- cpy
+						   left_ctrl   <= iy_left;
+						 else
+						   -- cpx
+					      left_ctrl   <= ix_left;
+						 end if;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1101" => -- bsr / jsr
+					    left_ctrl   <= pc_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_nop;
+						 cc_ctrl     <= latch_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1110" => -- lds
+					    left_ctrl   <= sp_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ld16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+						 sp_ctrl     <= load_sp;
+					  when "1111" => -- sts / xgdx / xgdy
+						 if op_code(7 downto 4) = "1000" then
+				         --
+			 	         -- exchange registers
+				         -- at this point md holds accd
+				         -- accd holds either X or Y
+				         -- now transfer md to X or Y
+				         --
+					      left_ctrl  <= md_left;
+                     right_ctrl <= zero_right;
+                     alu_ctrl   <= alu_st16;
+                     cc_ctrl    <= latch_cc;
+                     acca_ctrl  <= latch_acca;
+                     accb_ctrl  <= latch_accb;
+                     sp_ctrl    <= latch_sp;
+					      if pre_byte = "00011000" then
+                       ix_ctrl    <= latch_ix;
+                       iy_ctrl    <= load_iy;
+					      else
+                       ix_ctrl    <= load_ix;
+                       iy_ctrl    <= latch_iy;
+					      end if;
+                   else
+						   -- sts
+					      left_ctrl   <= sp_left;
+					      right_ctrl  <= md_right;
+					      alu_ctrl    <= alu_st16;
+						   cc_ctrl     <= load_cc;
+					      acca_ctrl   <= latch_acca;
+                     accb_ctrl   <= latch_accb;
+                     ix_ctrl     <= latch_ix;
+                     iy_ctrl     <= latch_iy;
+                     sp_ctrl     <= latch_sp;
+                   end if;
+					  when others =>
+					    left_ctrl   <= acca_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_nop;
+						 cc_ctrl     <= latch_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  end case;
+	            when "1100" | -- accb immediate
+	                 "1101" | -- accb direct
+	                 "1110" | -- accb indexed
+                    "1111" => -- accb extended
+				     case op_code(3 downto 0) is
+					  when "0000" => -- subb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0001" => -- cmpb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sub8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0010" => -- sbcb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_sbc;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0011" => -- addd
+					    left_ctrl   <= accd_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_add16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_hi_acca;
+						 accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0100" => -- andb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_and;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0101" => -- bitb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_and;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0110" => -- ldab
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ld8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "0111" => -- stab
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_st8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1000" => -- eorb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_eor;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1001" => -- adcb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_adc;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1010" => -- orab
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ora;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1011" => -- addb
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_add8;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1100" => -- ldd
+					    left_ctrl   <= accd_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ld16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= load_hi_acca;
+                   accb_ctrl   <= load_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1101" => -- std
+					    left_ctrl   <= accd_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_st16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when "1110" => -- ldx / ldy
+					    if ((pre_byte = "00011000") or (pre_byte = "00011010"))  then
+						   -- LDY
+					      left_ctrl   <= iy_left;
+                     ix_ctrl     <= latch_ix;
+                     iy_ctrl     <= load_iy;
+                   else
+						   -- LDX
+					      left_ctrl   <= ix_left;
+                     ix_ctrl     <= load_ix;
+                     iy_ctrl     <= latch_iy;
+						 end if;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_ld16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+						 sp_ctrl     <= latch_sp;
+					  when "1111" => -- stx / sty
+					    if ((pre_byte = "00011000") or (pre_byte = "00011010"))  then
+                     -- STY
+					      left_ctrl   <= iy_left;
+                   else
+						   -- STX
+					      left_ctrl   <= ix_left;
+						 end if;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_st16;
+						 cc_ctrl     <= load_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  when others =>
+					    left_ctrl   <= accb_left;
+					    right_ctrl  <= md_right;
+					    alu_ctrl    <= alu_nop;
+						 cc_ctrl     <= latch_cc;
+					    acca_ctrl   <= latch_acca;
+                   accb_ctrl   <= latch_accb;
+                   ix_ctrl     <= latch_ix;
+                   iy_ctrl     <= latch_iy;
+                   sp_ctrl     <= latch_sp;
+					  end case;
+	            when others =>
+					  left_ctrl   <= accd_left;
+					  right_ctrl  <= md_right;
+					  alu_ctrl    <= alu_nop;
+					  cc_ctrl     <= latch_cc;
+					  acca_ctrl   <= latch_acca;
+                 accb_ctrl   <= latch_accb;
+                 ix_ctrl     <= latch_ix;
+                 iy_ctrl     <= latch_iy;
+                 sp_ctrl     <= latch_sp;
+               end case;
+               ea_ctrl    <= reset_ea;
+               md_ctrl    <= latch_md;
+				   count_ctrl <= reset_count;
+				   -- fetch the op code
+			      op_ctrl    <= fetch_op;
+               pre_ctrl   <= fetch_pre;
+               addr_ctrl  <= fetch_ad;
+               dout_ctrl  <= md_lo_dout;
+		  	      iv_ctrl    <= latch_iv;
+				   -- service non maskable interrupts
+			      if (xirq = '1') and (cc(XBIT) = '0') then
+                 pc_ctrl    <= latch_pc;
+			        next_state <= int_pcl_state;
+				   -- service maskable interrupts
+			      else
 					--
 					-- IRQ is level sensitive
 					--
-				   if (irq = '1') and (cc(IBIT) = '0') then
-                 left_ctrl  <= acca_left;
-                 right_ctrl <= zero_right;
-                 alu_ctrl   <= alu_nop;
-                 cc_ctrl    <= latch_cc;
-                 pc_ctrl    <= latch_pc;
-			        next_state <= int_pcl_state;
-               else
-				   -- Advance the PC to fetch next instruction byte
-                 left_ctrl  <= pc_left;
-                 right_ctrl <= one_right;
-                 alu_ctrl   <= alu_add16;
-                 cc_ctrl    <= latch_cc;
-                 pc_ctrl    <= load_pc;
-			        next_state <= decode_state;
-               end if;
-				 end if;
+				     if (irq = '1') and (cc(IBIT) = '0') then
+                   pc_ctrl    <= latch_pc;
+			          next_state <= int_pcl_state;
+                 else
+				     -- Advance the PC to fetch next instruction byte
+                   pc_ctrl    <= incr_pc;
+			          next_state <= decode_state;
+                 end if;
+				   end if;
 			 --
 			 -- Here to decode instruction
 			 -- and fetch next byte of intruction
@@ -1107,9 +1529,9 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				 -- fetch first byte of address or immediate data
              addr_ctrl  <= fetch_ad;
              dout_ctrl  <= md_lo_dout;
-             pre_ctrl   <= latch_pre;
              iv_ctrl    <= latch_iv;
 				 count_ctrl <= reset_count;
+             pre_ctrl   <= latch_pre;
 			    case op_code(7 downto 4) is
 				 when "0000" =>
 				   md_ctrl    <= reset_md;
@@ -1206,12 +1628,14 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  iy_ctrl    <= latch_iy;
                  ea_ctrl    <= reset_ea;
 					  next_state <= fetch_state;
-		         when "1000" => -- inx
+		         when "1000" => -- inx / iny
 					  if pre_byte = "00011000" then
+					    -- iny
 					    left_ctrl  <= iy_left;
 					    ix_ctrl    <= latch_ix;
 					    iy_ctrl    <= load_iy;
 					  else
+					    -- inx
 					    left_ctrl  <= ix_left;
 					    ix_ctrl    <= load_ix;
 					    iy_ctrl    <= latch_iy;
@@ -1223,12 +1647,14 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  acca_ctrl  <= latch_acca;
 					  accb_ctrl  <= latch_accb;
 					  next_state <= fetch_state;
-		         when "1001" => -- dex
+		         when "1001" => -- dex / dey
 					  if pre_byte = "00011000" then
+					    -- dey
 					    left_ctrl  <= iy_left;
 					    ix_ctrl    <= latch_ix;
 					    iy_ctrl    <= load_iy;
 					  else
+					    -- dex
 					    left_ctrl  <= ix_left;
 					    ix_ctrl    <= load_ix;
 					    iy_ctrl    <= latch_iy;
@@ -1239,7 +1665,6 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                  cc_ctrl    <= load_cc;
 					  acca_ctrl  <= latch_acca;
 					  accb_ctrl  <= latch_accb;
-					  ix_ctrl    <= load_ix;
 					  next_state <= fetch_state;
 		         when "1010" => -- clv
 					  left_ctrl  <= acca_left;
@@ -1356,7 +1781,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  acca_ctrl  <= latch_acca;
                  accb_ctrl  <= latch_accb;
                  pc_ctrl    <= load_pc;
-					  next_state <= direct_state;
+					  next_state <= read8_state;
 		         when "0011" => -- brclr direct
 			        op_ctrl    <= latch_op;
 					  left_ctrl  <= pc_left;
@@ -1366,7 +1791,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  acca_ctrl  <= latch_acca;
                  accb_ctrl  <= latch_accb;
                  pc_ctrl    <= load_pc;
-					  next_state <= direct_state;
+					  next_state <= read8_state;
 		         when "0100" => -- bset direct
 			        op_ctrl    <= latch_op;
 					  left_ctrl  <= pc_left;
@@ -1376,7 +1801,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  acca_ctrl  <= latch_acca;
                  accb_ctrl  <= latch_accb;
                  pc_ctrl    <= load_pc;
-					  next_state <= direct_state;
+					  next_state <= read8_state;
 		         when "0101" => -- bclr direct
 			        op_ctrl    <= latch_op;
 					  left_ctrl  <= pc_left;
@@ -1386,7 +1811,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  acca_ctrl  <= latch_acca;
                  accb_ctrl  <= latch_accb;
                  pc_ctrl    <= load_pc;
-					  next_state <= direct_state;
+					  next_state <= read8_state;
 		         when "0110" => -- tab
 			        op_ctrl    <= latch_op;
 					  left_ctrl  <= acca_left;
@@ -1427,7 +1852,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                  accb_ctrl  <= latch_accb;
                  pc_ctrl    <= latch_pc;
 					  next_state <= fetch_state;
-		         when "1010" => -- CPD & CPY ff,X prebyte
+		         when "1010" => -- prebyte - CPD / CPY / LDY / STY ff,X
 			        op_ctrl    <= fetch_op;
 					  left_ctrl  <= pc_left;
 	              right_ctrl <= one_right;
@@ -1624,9 +2049,11 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					   cc_ctrl    <= latch_cc;
                   sp_ctrl    <= latch_sp;
 					   if pre_byte = "00011000" then
+						  -- tsy
 					     ix_ctrl    <= latch_ix;
 					     iy_ctrl    <= load_iy;
 					   else
+						  -- tsx
 					     ix_ctrl    <= load_ix;
 					     iy_ctrl    <= latch_iy;
 					   end if;
@@ -1670,8 +2097,10 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 						next_state <= fetch_state;
 		         when "0101" => -- txs / tys
 					   if pre_byte = "00011000" then
+						  -- tys
 					     left_ctrl  <= iy_left;
 					   else
+						  -- txs
 					     left_ctrl  <= ix_left;
 					   end if;
 		            right_ctrl <= one_right;
@@ -1699,7 +2128,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                   iy_ctrl    <= latch_iy;
 						sp_ctrl    <= latch_sp;
 						next_state <= pshb_state;
-		         when "1000" => -- pulx
+		         when "1000" => -- pulxy
                   left_ctrl  <= sp_left;
                   right_ctrl <= one_right;
                   alu_ctrl   <= alu_add16;
@@ -1707,7 +2136,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 						ix_ctrl    <= latch_ix;
                   iy_ctrl    <= latch_iy;
                   sp_ctrl    <= load_sp;
-						next_state <= pulx_hi_state;
+						next_state <= pulxy_hi_state;
 		         when "1001" => -- rts
                   left_ctrl  <= sp_left;
                   right_ctrl <= one_right;
@@ -1741,7 +2170,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 						iy_ctrl    <= latch_iy;
                   sp_ctrl    <= load_sp;
 						next_state <= rti_cc_state;
-		         when "1100" => -- pshx
+		         when "1100" => -- pshxy
 		            left_ctrl  <= sp_left;
 		            right_ctrl <= zero_right;
 						alu_ctrl   <= alu_nop;
@@ -1749,7 +2178,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 						ix_ctrl    <= latch_ix;
 						iy_ctrl    <= latch_iy;
 						sp_ctrl    <= latch_sp;
-						next_state <= pshx_lo_state;
+						next_state <= pshxy_lo_state;
 		         when "1101" => -- mul
 		            left_ctrl  <= acca_left;
 		            right_ctrl <= accb_right;
@@ -1793,8 +2222,8 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				 -- Do not advance PC
 				 --
 	          when "0100" => -- acca single op
-               ea_ctrl    <= fetch_first_ea;
-				   md_ctrl    <= fetch_first_md;
+               ea_ctrl    <= latch_ea;
+				   md_ctrl    <= latch_md;
 				   op_ctrl    <= latch_op;
                accb_ctrl  <= latch_accb;
                pc_ctrl    <= latch_pc;
@@ -1865,7 +2294,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  cc_ctrl    <= latch_cc;
 		         when "1111" => -- clr
 		           right_ctrl <= zero_right;
-					  alu_ctrl   <= alu_ld8;
+					  alu_ctrl   <= alu_clr;
 					  acca_ctrl  <= load_acca;
 					  cc_ctrl    <= load_cc;
 		         when others =>
@@ -1880,8 +2309,8 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				 -- Do not advance PC
 				 --
 	          when "0101" =>
-               ea_ctrl    <= fetch_first_ea;
-				   md_ctrl    <= fetch_first_md;
+               ea_ctrl    <= latch_ea;
+				   md_ctrl    <= latch_md;
 				   op_ctrl    <= latch_op;
                acca_ctrl  <= latch_acca;
                pc_ctrl    <= latch_pc;
@@ -1952,7 +2381,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  cc_ctrl    <= latch_cc;
 		         when "1111" => -- clr
 		           right_ctrl <= zero_right;
-					  alu_ctrl   <= alu_ld8;
+					  alu_ctrl   <= alu_clr;
 					  accb_ctrl  <= load_accb;
 					  cc_ctrl    <= load_cc;
 		         when others =>
@@ -2006,7 +2435,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				   next_state <= extended_state;
 
 	          when "1000" => -- acca immediate
-               ea_ctrl    <= fetch_first_ea;
+               ea_ctrl    <= fetch_first_ea;	-- for BSR
 				   op_ctrl    <= latch_op;
                acca_ctrl  <= latch_acca;
 					accb_ctrl  <= latch_accb;
@@ -2040,19 +2469,18 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                  alu_ctrl   <= alu_st16;
                  pc_ctrl    <= latch_pc;
 				     md_ctrl    <= load_md;
-					  next_state <= exchange1_state;
+					  next_state <= exchange_state;
 					when others =>
 				     md_ctrl    <= fetch_first_md;
                  left_ctrl  <= pc_left;
                  right_ctrl <= one_right;
                  alu_ctrl   <= alu_add16;
                  pc_ctrl    <= load_pc;
-				     next_state <= execute_state;
+				     next_state <= fetch_state;
                end case;
 
 	          when "1001" => -- acca direct
                ea_ctrl    <= fetch_first_ea;
-				   md_ctrl    <= fetch_first_md;
 				   op_ctrl    <= latch_op;
                acca_ctrl  <= latch_acca;
 					accb_ctrl  <= latch_accb;
@@ -2060,19 +2488,36 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				   iy_ctrl    <= latch_iy;
 				   sp_ctrl    <= latch_sp;
 					-- increment the pc
-               left_ctrl  <= pc_left;
-               right_ctrl <= one_right;
-               alu_ctrl   <= alu_add16;
-					cc_ctrl    <= latch_cc;
-               pc_ctrl    <= load_pc;
+               pc_ctrl    <= incr_pc;
 					case op_code(3 downto 0) is
-					when "0111" |  -- staa direct
-					     "1111" => -- sts direct
-				     next_state <= execute_state;
+					when "0111" =>  -- staa direct
+                 left_ctrl  <= acca_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st8;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+				     next_state <= write8_state;
+					when "1111" => -- sts direct
+                 left_ctrl  <= sp_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st16;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+				     next_state <= write16_state;
 					when "1101" => -- jsr direct
+                 left_ctrl  <= acca_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_nop;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= fetch_first_md;
 					  next_state <= jsr_state;
 					when others =>
-				     next_state <= direct_state;
+                 left_ctrl  <= acca_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_nop;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= fetch_first_md;
+				     next_state <= read8_state;
                end case;
 
 	          when "1010" => -- acca indexed
@@ -2110,7 +2555,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				   next_state <= extended_state;
 
 	          when "1100" => -- accb immediate
-               ea_ctrl    <= fetch_first_ea;
+               ea_ctrl    <= latch_ea;
 				   md_ctrl    <= fetch_first_md;
                acca_ctrl  <= latch_acca;
 					accb_ctrl  <= latch_accb;
@@ -2126,7 +2571,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					case op_code(3 downto 0) is
                when "0011" | -- addd #
 					     "1100" | -- ldd #
-					     "1110" => -- ldx #
+					     "1110" => -- ldx # / ldy #
 				     op_ctrl    <= latch_op;
 					  next_state <= immediate16_state;
 					when "1101" => -- indexed Y pre-byte $CD
@@ -2134,7 +2579,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  next_state <= decode_state;
 					when others =>
 				     op_ctrl    <= latch_op;
-				     next_state <= execute_state;
+				     next_state <= fetch_state;
                end case;
 
 	          when "1101" => -- accb direct
@@ -2146,19 +2591,40 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				   ix_ctrl    <= latch_ix;
 				   iy_ctrl    <= latch_iy;
 				   sp_ctrl    <= latch_sp;
-					-- increment the pc
-               left_ctrl  <= pc_left;
-               right_ctrl <= one_right;
-               alu_ctrl   <= alu_add16;
-					cc_ctrl    <= latch_cc;
-               pc_ctrl    <= load_pc;
+               pc_ctrl    <= incr_pc;
 					case op_code(3 downto 0) is
-					when "0111" |  -- stab direct
-					     "1101" |  -- std direct
-					     "1111" => -- stx / sty direct
-				     next_state <= execute_state;
+					when "0111" =>  -- stab direct
+                 left_ctrl  <= accb_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st8;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+				     next_state <= write8_state;
+					when "1101" => -- std direct
+                 left_ctrl  <= accd_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st16;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+					  next_state <= write16_state;
+					when "1111" => -- stx / sty direct
+					  if( pre_byte = "00011000" ) or (pre_byte = "00011010" ) then
+					    left_ctrl  <= iy_left;
+                 else
+                   left_ctrl  <= ix_left;
+                 end if;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st16;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+				     next_state <= write16_state;
 					when others =>
-				     next_state <= direct_state;
+                 left_ctrl  <= acca_left;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_nop;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= fetch_first_md;
+				     next_state <= read8_state;
                end case;
 
 	          when "1110" => -- accb indexed
@@ -2235,7 +2701,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 			    md_ctrl    <= fetch_next_md;
              addr_ctrl  <= fetch_ad;
              dout_ctrl  <= md_lo_dout;
-				 next_state <= execute_state;
+				 next_state <= fetch_state;
            --
 			  -- ea holds 8 bit index offet
 			  -- calculate the effective memory address
@@ -2244,62 +2710,149 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
            when indexed_state =>
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
-             ix_ctrl    <= latch_ix;
-             iy_ctrl    <= latch_iy;
              sp_ctrl    <= latch_sp;
              pc_ctrl    <= latch_pc;
-             md_ctrl    <= latch_md;
              iv_ctrl    <= latch_iv;
 				 count_ctrl <= reset_count;
 			    op_ctrl    <= latch_op;
 				 pre_ctrl   <= latch_pre;
-				 -- calculate effective address from index reg
-             -- index offest is not sign extended
-				 if (pre_byte = "00011000") or (pre_byte = "11001101") then
-			      left_ctrl  <= iy_left;
-				 else
-			      left_ctrl  <= ix_left;
-				 end if;
-				 right_ctrl <= ea_right;
-				 alu_ctrl   <= alu_add16;
-             cc_ctrl    <= latch_cc;
-             ea_ctrl    <= load_ea;
-				 -- idle the bus
+				 ix_ctrl    <= latch_ix;
+			    iy_ctrl    <= latch_iy;
+				 -- idle bus.
              addr_ctrl  <= idle_ad;
              dout_ctrl  <= md_lo_dout;
-				 -- work out next state
+				 -- add 8 bit ea to ix or iy
+				 if(( pre_byte = "00011000") or (pre_byte = "00011010")) then
+				   ea_ctrl    <= add_iy_ea;
+				 else
+				   ea_ctrl    <= add_ix_ea;
+				 end if;
 				 case op_code(7 downto 4) is
+				 when "0001" => -- BSET, BCLR, BRSET, BRCLR
+			      left_ctrl  <= acca_left;
+				   right_ctrl <= zero_right;
+				   alu_ctrl   <= alu_nop;
+               cc_ctrl    <= latch_cc;
+               md_ctrl    <= latch_md;
+	            case op_code(3 downto 0) is
+					when "1100" |  -- BSET
+				   	  "1101" |  -- BCLR
+						  "1110" |  -- BRSET
+						  "1111" => -- BRCLR
+                 next_state <= read8_state;
+               when others =>
+					  next_state <= fetch_state;
+               end case;
 				 when "0110" => -- single op indexed
 	            case op_code(3 downto 0) is
 		         when "1011" => -- undefined
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
 					  next_state <= fetch_state;
 		         when "1110" => -- jmp
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
 					  next_state <= jmp_state;
+					when "1111" => -- clr
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_st8;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= load_md;
+					  next_state <= write8_state;
 		         when others =>
-					  next_state <= direct_state;
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
+					  next_state <= read8_state;
 		         end case;
 	          when "1010" => -- acca indexed
 				   case op_code(3 downto 0) is
-					when "0111" |  -- staa
-					     "1111" => -- sts
-					  next_state <= execute_state;
+					when "0111" =>  -- staa
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_st8;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= load_md;
+				     next_state <= write8_state;
 					when "1101" => -- jsr
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
 					  next_state <= jsr_state;
+					when "1111" => -- sts
+			        left_ctrl  <= sp_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_st16;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= load_md;
+				     next_state <= write16_state;
 					when others =>
-					  next_state <= direct_state;
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
+					  next_state <= read8_state;
 					end case;
 	          when "1110" => -- accb indexed
 				   case op_code(3 downto 0) is
-					when "0111" |  -- stab
-					     "1101" |  -- std
-					     "1111" => -- stx / sty
-					  next_state <= execute_state;
+					when "0111" =>  -- stab direct
+			        left_ctrl  <= accb_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_st8;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= load_md;
+				     next_state <= write8_state;
+					when "1101" => -- std direct
+			        left_ctrl  <= accd_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_st16;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= load_md;
+					  next_state <= write16_state;
+					when "1111" => -- stx / sty direct
+					  if( pre_byte = "00011000" ) or (pre_byte = "00011010" ) then
+					    left_ctrl  <= iy_left;
+                 else
+                   left_ctrl  <= ix_left;
+                 end if;
+                 right_ctrl <= zero_right;
+                 alu_ctrl   <= alu_st16;
+					  cc_ctrl    <= latch_cc;
+				     md_ctrl    <= load_md;
+				     next_state <= write16_state;
 					when others =>
-					  next_state <= direct_state;
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+                 md_ctrl    <= latch_md;
+					  next_state <= read8_state;
 					end case;
 			    when others =>
+			      left_ctrl  <= acca_left;
+				   right_ctrl <= zero_right;
+				   alu_ctrl   <= alu_nop;
+               cc_ctrl    <= latch_cc;
+               md_ctrl    <= latch_md;
 					next_state <= fetch_state;
 			    end case;
+           --
+			  -- ea holds 8 bit index offet
+			  -- calculate the effective memory address
+			  -- using the alu
+			  --
            --
 			  -- ea holds the low byte of the absolute address
 			  -- Move ea low byte into ea high byte
@@ -2307,66 +2860,135 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 			  -- advance the program counter
 			  --
 			  when extended_state => -- fetch ea low byte
-             acca_ctrl  <= latch_acca;
-             accb_ctrl  <= latch_accb;
-             ix_ctrl    <= latch_ix;
-             iy_ctrl    <= latch_iy;
-             sp_ctrl    <= latch_sp;
-             md_ctrl    <= latch_md;
-             iv_ctrl    <= latch_iv;
-				 count_ctrl <= reset_count;
-			    op_ctrl    <= latch_op;
-				 pre_ctrl   <= latch_pre;
-			    -- increment pc
-             left_ctrl  <= pc_left;
-             right_ctrl <= one_right;
-             alu_ctrl   <= alu_add16;
-             cc_ctrl    <= latch_cc;
-             pc_ctrl    <= load_pc;
-				 -- fetch next effective address bytes
-				 ea_ctrl    <= fetch_next_ea;
-             addr_ctrl  <= fetch_ad;
-			    dout_ctrl  <= md_lo_dout;
-				 -- work out the next state
-				 case op_code(7 downto 4) is
-					when "0111" => -- single op extended
+               acca_ctrl  <= latch_acca;
+               accb_ctrl  <= latch_accb;
+               ix_ctrl    <= latch_ix;
+               iy_ctrl    <= latch_iy;
+               sp_ctrl    <= latch_sp;
+               iv_ctrl    <= latch_iv;
+				   count_ctrl <= reset_count;
+			      op_ctrl    <= latch_op;
+				   pre_ctrl   <= latch_pre;
+					-- increment pc
+               pc_ctrl    <= incr_pc;
+					-- fetch next effective address bytes
+					ea_ctrl    <= fetch_next_ea;
+               addr_ctrl  <= fetch_ad;
+					dout_ctrl  <= md_lo_dout;
+					-- work out the next state
+				   case op_code(7 downto 4) is
+				   when "0111" => -- single op extended
 	              case op_code(3 downto 0) is
-		             when "1011" => -- undefined
-					      next_state <= fetch_state;
-		             when "1110" => -- jmp
-					      next_state <= jmp_state;
-		             when others =>
-					      next_state <= direct_state;
+		           when "1011" => -- undefined
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= fetch_state;
+		           when "1110" => -- jmp
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= jmp_state;
+		           when "1111" => -- clr
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_ld8;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+					    next_state <= write8_state;
+		           when others =>
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= read8_state;
 		           end case;
 	            when "1011" => -- acca extended
 				     case op_code(3 downto 0) is
-						 when "0111" |  -- staa extended
-					         "1111" => -- sts
-						   next_state <= execute_state;
-					    when "1101" => -- jsr
-					      next_state <= jsr_state;
-					    when others =>
-					      next_state <= direct_state;
+					  when "0111" =>  -- staa
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_st8;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+				       next_state <= write8_state;
+					  when "1101" => -- jsr
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= jsr_state;
+					  when "1111" => -- sts
+			          left_ctrl  <= sp_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_st16;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+				       next_state <= write16_state;
+					  when others =>
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= read8_state;
 					  end case;
 	            when "1111" => -- accb extended
 				     case op_code(3 downto 0) is
-						 when "0111" |  -- stab extended
-					         "1101" |  -- std
-					         "1111" => -- stx / sty
-					      next_state <= execute_state;
-					    when others =>
-					      next_state <= direct_state;
+					  when "0111" =>  -- stab
+			          left_ctrl  <= accb_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_st8;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+				       next_state <= write8_state;
+					  when "1101" => -- std
+			          left_ctrl  <= accd_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_st16;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+					    next_state <= write16_state;
+					  when "1111" => -- stx / sty
+					    if(( pre_byte = "00011000" ) or ( pre_byte = "00011010" )) then
+					      left_ctrl <= iy_left;
+					    else
+			            left_ctrl <= ix_left;
+					    end if;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_st16;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= load_md;
+				       next_state <= write16_state;
+					  when others =>
+			          left_ctrl  <= acca_left;
+				       right_ctrl <= zero_right;
+				       alu_ctrl   <= alu_nop;
+                   cc_ctrl    <= latch_cc;
+                   md_ctrl    <= latch_md;
+					    next_state <= read8_state;
 					  end case;
-					when others =>
-					    next_state <= fetch_state;
-			    end case;
+			      when others =>
+                 md_ctrl    <= latch_md;
+			        left_ctrl  <= acca_left;
+				     right_ctrl <= zero_right;
+				     alu_ctrl   <= alu_nop;
+                 cc_ctrl    <= latch_cc;
+					  next_state <= fetch_state;
+			      end case;
            --
 			  -- here if ea holds low byte (direct page)
 			  -- can enter here from extended addressing
 			  -- read memory location
 			  -- note that reads may be 8 or 16 bits
 			  --
-			  when direct_state => -- read data
+			  when read8_state => -- read data
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
              ix_ctrl    <= latch_ix;
@@ -2381,7 +3003,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
              addr_ctrl  <= read_ad;
 				 dout_ctrl  <= md_lo_dout;
 			    case op_code(7 downto 4) is
-					when "0001" => -- bset / bclr / brset / brclr
+				   when "0001" => -- bset / bclr / brset / brclr
  					  left_ctrl  <= pc_left;
 					  right_ctrl <= one_right;
 					  alu_ctrl   <= alu_add16;
@@ -2409,14 +3031,14 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					      alu_ctrl   <= alu_add16;
                      cc_ctrl    <= latch_cc;
 					      ea_ctrl    <= load_ea;
-					      next_state <= direct16_state;
+					      next_state <= read16_state;
 					    when others =>
  					      left_ctrl  <= ea_left;
 					      right_ctrl <= zero_right;
 					      alu_ctrl   <= alu_nop;
                      cc_ctrl    <= latch_cc;
 					      ea_ctrl    <= latch_ea;
-					      next_state <= execute_state;
+					      next_state <= fetch_state;
 					  end case;
 	            when "1101" | "1110" | "1111" => -- accb
                  pc_ctrl    <= latch_pc;
@@ -2430,14 +3052,14 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					      alu_ctrl   <= alu_add16;
                      cc_ctrl    <= latch_cc;
 					      ea_ctrl    <= load_ea;
-					      next_state <= direct16_state;
+					      next_state <= read16_state;
 					    when others =>
  					      left_ctrl  <= ea_left;
 					      right_ctrl <= zero_right;
 					      alu_ctrl   <= alu_nop;
                      cc_ctrl    <= latch_cc;
 					      ea_ctrl    <= latch_ea;
-					      next_state <= execute_state;
+					      next_state <= fetch_state;
 					  end case;
 					when others =>
  					  left_ctrl  <= ea_left;
@@ -2449,7 +3071,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  next_state <= fetch_state;
 			    end case;
 
-			  when direct16_state => -- read second data byte from ea
+			  when read16_state => -- read second data byte from ea
                  -- default
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
@@ -2471,14 +3093,14 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				 md_ctrl    <= fetch_next_md;
              addr_ctrl  <= read_ad;
              dout_ctrl  <= md_lo_dout;
-			    next_state <= execute_state;
+			    next_state <= fetch_state;
 
 			  --
 			  -- exchange registers
 			  -- at this point md holds accd
 			  -- transfer X or Y to accd
 			  --
-			  when exchange1_state => -- md holds accd
+			  when exchange_state => -- md holds accd
              -- default
              ix_ctrl    <= latch_ix;
              iy_ctrl    <= latch_iy;
@@ -2504,42 +3126,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 			    -- idle the address bus
              addr_ctrl  <= idle_ad;
              dout_ctrl  <= md_lo_dout;
-			    next_state <= exchange2_state;
-
-				--
-				-- exchange registers
-				-- at this point md holds accd
-				-- accd holds either X or Y
-				-- now transfer md to X or Y
-				--
-			   when exchange2_state => -- md holds accd
-                 -- default
-                 acca_ctrl  <= latch_acca;
-                 accb_ctrl  <= latch_accb;
-                 sp_ctrl    <= latch_sp;
-                 pc_ctrl    <= latch_pc;
-                 iv_ctrl    <= latch_iv;
-				     count_ctrl <= reset_count;
-			        op_ctrl    <= latch_op;
-				     pre_ctrl   <= latch_pre;
-                 ea_ctrl    <= latch_ea;
-				     md_ctrl    <= latch_md;
-					  -- transfer md to x or y
-					  left_ctrl  <= md_left;
-                 right_ctrl <= zero_right;
-                 alu_ctrl   <= alu_st16;
-                 cc_ctrl    <= latch_cc;
-					  if pre_byte = "00011000" then
-                   ix_ctrl    <= latch_ix;
-                   iy_ctrl    <= load_iy;
-					  else
-                   ix_ctrl    <= load_ix;
-                   iy_ctrl    <= latch_iy;
-					  end if;
-					  -- idle the address bus
-                 addr_ctrl  <= idle_ad;
-                 dout_ctrl  <= md_lo_dout;
-					  next_state <= fetch_state;
+			    next_state <= fetch_state;
 
 			   when bitmask_state => -- fetch bit mask from next op
                  -- default
@@ -2569,9 +3156,9 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 					  when "00010011" | "00011111" => -- brclr
 					    next_state <= brclr_state;
 					  when "00010100" | "00011100" => -- bset
-						 next_state <= bset_state;
+						 next_state <= execute_state;
 					  when "00010101" | "00011101" => -- bclr
-						 next_state <= bclr_state;
+						 next_state <= execute_state;
 					  when others =>
 					    next_state <= fetch_state;
 					  end case;
@@ -2632,53 +3219,6 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 						   next_state <= branch_state;
 					  end if;
 
-			   when bclr_state =>
-                 -- default
-                 acca_ctrl  <= latch_acca;
-                 accb_ctrl  <= latch_accb;
-                 ix_ctrl    <= latch_ix;
-                 iy_ctrl    <= latch_iy;
-                 sp_ctrl    <= latch_sp;
-                 iv_ctrl    <= latch_iv;
-				     count_ctrl <= reset_count;
-			        op_ctrl    <= latch_op;
-				     pre_ctrl   <= latch_pre;
-                 pc_ctrl    <= latch_pc;
-					  -- mask bit
-                 left_ctrl  <= md_left;
-                 right_ctrl <= pre_right;
-                 alu_ctrl   <= alu_bclr;
-                 cc_ctrl    <= load_cc;
-				     md_ctrl    <= load_md;
-					  -- idle bus
-                 addr_ctrl  <= idle_ad;
-                 ea_ctrl    <= latch_ea;
-                 dout_ctrl  <= md_lo_dout;
-					  next_state <= write8_state;
-
-			   when bset_state =>
-                 -- default
-                 acca_ctrl  <= latch_acca;
-                 accb_ctrl  <= latch_accb;
-                 ix_ctrl    <= latch_ix;
-                 iy_ctrl    <= latch_iy;
-                 sp_ctrl    <= latch_sp;
-                 iv_ctrl    <= latch_iv;
-				     count_ctrl <= reset_count;
-			        op_ctrl    <= latch_op;
-				     pre_ctrl   <= latch_pre;
-                 pc_ctrl    <= latch_pc;
-					  -- mask bit
-                 left_ctrl  <= md_left;
-                 right_ctrl <= pre_right;
-                 alu_ctrl   <= alu_bset;
-                 cc_ctrl    <= load_cc;
-				     md_ctrl    <= load_md;
-					  -- idle bus
-                 addr_ctrl  <= idle_ad;
-                 ea_ctrl    <= latch_ea;
-                 dout_ctrl  <= md_lo_dout;
-					  next_state <= write8_state;
 
 				when jmp_state =>
                  acca_ctrl  <= latch_acca;
@@ -3195,110 +3735,58 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                  dout_ctrl  <= md_lo_dout;
 				     next_state <= spin_state;
 
-
+             --
+				 -- Execute cycle is performed by
+				 -- single operand indexed and extended instructions
+				 -- and bit operators.
+				 --
 			    when execute_state => -- execute
 				   -- default
 			      op_ctrl    <= latch_op;
 				   pre_ctrl   <= latch_pre;
 				   count_ctrl <= reset_count;
+					acca_ctrl   <= latch_acca;
+               accb_ctrl   <= latch_accb;
+               ix_ctrl     <= latch_ix;
+               iy_ctrl     <= latch_iy;
+               sp_ctrl     <= latch_sp;
+               pc_ctrl     <= latch_pc;
+               iv_ctrl     <= latch_iv;
+               ea_ctrl     <= latch_ea;
+					  -- idle the bus
+               addr_ctrl   <= idle_ad;
+               dout_ctrl   <= md_lo_dout;
 			      case op_code(7 downto 4) is
 					when "0001" => -- bit operators come here
 					  case op_code(3 downto 0) is
-						 when "0100" | "1100" => -- bset
-                     acca_ctrl  <= latch_acca;
-                     accb_ctrl  <= latch_accb;
-                     ix_ctrl    <= latch_ix;
-                     iy_ctrl    <= latch_iy;
-                     sp_ctrl    <= latch_sp;
-                     pc_ctrl    <= latch_pc;
-                     iv_ctrl    <= latch_iv;
-                     ea_ctrl    <= latch_ea;
+					  when "0100" | "1100" => -- bset
 					      -- OR bit
                      left_ctrl  <= md_left;
 					      right_ctrl <= pre_right;
 					      alu_ctrl   <= alu_bset;
 					      cc_ctrl    <= load_cc;
                      md_ctrl    <= load_md;
-					      -- idle bus
-                     addr_ctrl  <= idle_ad;
-                     dout_ctrl  <= md_lo_dout;
 				         next_state <= write8_state;
-					    when "0101" | "1101" => -- bclr
-                     acca_ctrl  <= latch_acca;
-                     accb_ctrl  <= latch_accb;
-                     ix_ctrl    <= latch_ix;
-                     iy_ctrl    <= latch_iy;
-                     sp_ctrl    <= latch_sp;
-                     pc_ctrl    <= latch_pc;
-                     iv_ctrl    <= latch_iv;
-                     ea_ctrl    <= latch_ea;
+					  when "0101" | "1101" => -- bclr
 					      -- AND bit
                      left_ctrl  <= md_left;
 					      right_ctrl <= pre_right;
 					      alu_ctrl   <= alu_bclr;
 					      cc_ctrl    <= load_cc;
                      md_ctrl    <= load_md;
-					      -- idle bus
-                     addr_ctrl  <= idle_ad;
-                     dout_ctrl  <= md_lo_dout;
 				         next_state <= write8_state;
-					    when others =>
-                     acca_ctrl  <= latch_acca;
-                     accb_ctrl  <= latch_accb;
-                     ix_ctrl    <= latch_ix;
-                     iy_ctrl    <= latch_iy;
-                     sp_ctrl    <= latch_sp;
-                     pc_ctrl    <= latch_pc;
-                     iv_ctrl    <= latch_iv;
-                     ea_ctrl    <= latch_ea;
+					  when others =>
 					      -- idle ALU
                      left_ctrl  <= md_left;
 					      right_ctrl <= pre_right;
 					      alu_ctrl   <= alu_nop;
 					      cc_ctrl    <= latch_cc;
                      md_ctrl    <= latch_md;
-					      -- idle bus
-                     addr_ctrl  <= idle_ad;
-                     dout_ctrl  <= md_lo_dout;
 				         next_state <= fetch_state;
 					  end case;
-				   when "0000" | -- inherent operators
-	                 "0010" | -- branch conditional
-	                 "0011" | -- stack operators
-	                 "0100" | -- acca single operand
-	                 "0101" => -- accb single operand
-                 acca_ctrl  <= latch_acca;
-                 accb_ctrl  <= latch_accb;
-                 ix_ctrl    <= latch_ix;
-                 iy_ctrl    <= latch_iy;
-                 sp_ctrl    <= latch_sp;
-                 pc_ctrl    <= latch_pc;
-                 md_ctrl    <= latch_md;
-                 iv_ctrl    <= latch_iv;
-                 ea_ctrl    <= latch_ea;
-					  -- idle ALU
-                 left_ctrl  <= acca_left;
-					  right_ctrl <= zero_right;
-					  alu_ctrl   <= alu_nop;
-					  cc_ctrl    <= latch_cc;
-					  -- idle bus
-                 addr_ctrl  <= idle_ad;
-                 dout_ctrl  <= md_lo_dout;
-				     next_state <= fetch_state;
 
 	            when "0110" | -- indexed single op
 	                 "0111" => -- extended single op
-                 acca_ctrl  <= latch_acca;
-                 accb_ctrl  <= latch_accb;
-                 ix_ctrl    <= latch_ix;
-                 iy_ctrl    <= latch_iy;
-                 sp_ctrl    <= latch_sp;
-                 pc_ctrl    <= latch_pc;
-                 iv_ctrl    <= latch_iv;
-                 ea_ctrl    <= latch_ea;
-					  -- idle the bus
-                 addr_ctrl  <= idle_ad;
-                 dout_ctrl  <= md_lo_dout;
 	              case op_code(3 downto 0) is
 		           when "0000" => -- neg
                    left_ctrl  <= md_left;
@@ -3387,7 +3875,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 		           when "1111" => -- clr
                    left_ctrl  <= md_left;
 						 right_ctrl <= zero_right;
-					    alu_ctrl   <= alu_ld8;
+					    alu_ctrl   <= alu_clr;
 					    cc_ctrl    <= load_cc;
 				       md_ctrl    <= load_md;
 				       next_state <= write8_state;
@@ -3399,478 +3887,15 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
 				       md_ctrl    <= latch_md;
 				       next_state <= fetch_state;
 		           end case;
-
-	            when "1000" | -- acca immediate
-	                 "1001" | -- acca direct
-	                 "1010" | -- acca indexed
-                    "1011" => -- acca extended
-                 pc_ctrl    <= latch_pc;
-                 iv_ctrl    <= latch_iv;
-                 ea_ctrl    <= latch_ea;
-					  -- idle the bus
-                 addr_ctrl  <= idle_ad;
-                 dout_ctrl  <= md_lo_dout;
-				     case op_code(3 downto 0) is
-					  when "0000" => -- suba
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state  <= fetch_state;
-					  when "0001" => -- cmpa
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state  <= fetch_state;
-					  when "0010" => -- sbca
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sbc;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0011" => -- subd / cmpd
-					    left_ctrl   <= accd_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub16;
-						 if (pre_byte = "00011010") or (pre_byte = "11001101") then
-						   cc_ctrl     <= latch_cc;
-					      acca_ctrl   <= latch_acca;
-						   accb_ctrl   <= latch_accb;
-						 else
-						   cc_ctrl     <= load_cc;
-					      acca_ctrl   <= load_hi_acca;
-						   accb_ctrl   <= load_accb;
-						 end if;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0100" => -- anda
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_and;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0101" => -- bita
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_and;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0110" => -- ldaa
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ld8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0111" => -- staa
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_st8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= load_md;
-				       next_state <= write8_state;
-					  when "1000" => -- eora
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_eor;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1001" => -- adca
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_adc;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1010" => -- oraa
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ora;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1011" => -- adda
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_add8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1100" => -- cpx / cpy
-					    if (pre_byte = "00011000") or (pre_byte = "00011010") then
-						   left_ctrl   <= iy_left;
-						 else
-					      left_ctrl   <= ix_left;
-						 end if;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1101" => -- bsr / jsr
-					    left_ctrl   <= pc_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_nop;
-						 cc_ctrl     <= latch_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1110" => -- lds
-					    left_ctrl   <= sp_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ld16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-						 sp_ctrl     <= load_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1111" => -- sts
-					    left_ctrl   <= sp_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_st16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= load_md;
-				       next_state <= write16_state;
-					  when others =>
-					    left_ctrl   <= acca_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_nop;
-						 cc_ctrl     <= latch_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-		  				 next_state <= fetch_state;
-					  end case;
-	            when "1100" | -- accb immediate
-	                 "1101" | -- accb direct
-	                 "1110" | -- accb indexed
-                    "1111" => -- accb extended
-                 pc_ctrl    <= latch_pc;
-                 iv_ctrl    <= latch_iv;
-                 ea_ctrl    <= latch_ea;
-					  -- idle the bus
-                 addr_ctrl  <= idle_ad;
-                 dout_ctrl  <= md_lo_dout;
-				     case op_code(3 downto 0) is
-					  when "0000" => -- subb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state  <= fetch_state;
-					  when "0001" => -- cmpb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sub8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state  <= fetch_state;
-					  when "0010" => -- sbcb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_sbc;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0011" => -- addd
-					    left_ctrl   <= accd_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_add16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_hi_acca;
-						 accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0100" => -- andb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_and;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0101" => -- bitb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_and;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0110" => -- ldab
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ld8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "0111" => -- stab
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_st8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= load_md;
-				       next_state <= write8_state;
-					  when "1000" => -- eorb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_eor;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1001" => -- adcb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_adc;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1010" => -- orab
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ora;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1011" => -- addb
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_add8;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1100" => -- ldd
-					    left_ctrl   <= accd_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ld16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= load_hi_acca;
-                   accb_ctrl   <= load_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1101" => -- std
-					    left_ctrl   <= accd_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_st16;
-						 cc_ctrl     <= latch_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= load_md;
-				       next_state <= write16_state;
-					  when "1110" => -- ldx / ldy
-					    if pre_byte = "00011000" then
-					      left_ctrl   <= iy_left;
-                     ix_ctrl     <= latch_ix;
-                     iy_ctrl     <= load_iy;
-                   else
-					      left_ctrl   <= ix_left;
-                     ix_ctrl     <= load_ix;
-                     iy_ctrl     <= latch_iy;
-						 end if;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_ld16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-						 sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-				       next_state <= fetch_state;
-					  when "1111" => -- stx / sty
-					    if pre_byte = "00011000" then
-					      left_ctrl   <= iy_left;
-                   else
-					      left_ctrl   <= ix_left;
-						 end if;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_st16;
-						 cc_ctrl     <= load_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= load_md;
-				       next_state <= write16_state;
-					  when others =>
-					    left_ctrl   <= accb_left;
-					    right_ctrl  <= md_right;
-					    alu_ctrl    <= alu_nop;
-						 cc_ctrl     <= latch_cc;
-					    acca_ctrl   <= latch_acca;
-                   accb_ctrl   <= latch_accb;
-                   ix_ctrl     <= latch_ix;
-                   iy_ctrl     <= latch_iy;
-                   sp_ctrl     <= latch_sp;
-                   md_ctrl     <= latch_md;
-		  				 next_state <= fetch_state;
-					  end case;
+ 
 	            when others =>
 					  left_ctrl   <= accd_left;
 					  right_ctrl  <= md_right;
 					  alu_ctrl    <= alu_nop;
 					  cc_ctrl     <= latch_cc;
-					  acca_ctrl   <= latch_acca;
-                 accb_ctrl   <= latch_accb;
-                 ix_ctrl     <= latch_ix;
-                 iy_ctrl     <= latch_iy;
-                 sp_ctrl     <= latch_sp;
-                 pc_ctrl     <= latch_pc;
                  md_ctrl     <= latch_md;
-                 iv_ctrl     <= latch_iv;
-                 ea_ctrl     <= latch_ea;
-					  -- idle the bus
-                 addr_ctrl   <= idle_ad;
-                 dout_ctrl   <= md_lo_dout;
 		           next_state  <= fetch_state;
-              end case;
+               end case;
            --
 			  -- 16 bit Write state
 			  -- write high byte of ALU output.
@@ -4026,7 +4051,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
              dout_ctrl  <= accb_dout;
              next_state <= fetch_state;
 
-			  when pshx_lo_state =>
+			  when pshxy_lo_state =>
 				 -- default
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
@@ -4053,9 +4078,9 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
  				 else
 			      dout_ctrl  <= ix_lo_dout;
  				 end if;
-             next_state <= pshx_hi_state;
+             next_state <= pshxy_hi_state;
 
-			  when pshx_hi_state =>
+			  when pshxy_hi_state =>
 				 -- default registers
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
@@ -4083,7 +4108,7 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
  				 end if;
              next_state <= fetch_state;
 
-		  	  when pulx_hi_state =>
+		  	  when pulxy_hi_state =>
 				 -- default
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
@@ -4111,9 +4136,9 @@ state_logic: process( state, op_code, pre_byte, cc, ea, md, irq, xirq, ea_bit, c
                dout_ctrl  <= ix_hi_dout;
  				 end if;
              addr_ctrl  <= pull_ad;
-             next_state <= pulx_lo_state;
+             next_state <= pulxy_lo_state;
 
-		  	  when pulx_lo_state =>
+		  	  when pulxy_lo_state =>
 				 -- default
              acca_ctrl  <= latch_acca;
              accb_ctrl  <= latch_accb;
@@ -4756,12 +4781,10 @@ end process;
 
 change_state: process( clk, rst, state )
 begin
-  if clk'event and clk = '0' then
-    if rst = '1' then
- 	   state <= reset_state;
-    else
-      state <= next_state;
-	 end if;
+  if rst = '1' then
+ 	 state <= reset_state;
+  elsif clk'event and clk = '0' then
+    state <= next_state;
   end if;
 end process;
 	-- output

@@ -14,13 +14,13 @@ library ieee;
    use IEEE.STD_LOGIC_UNSIGNED.ALL;
    use ieee.numeric_std.all;
 
-entity my_testbench is
-end my_testbench;
+entity my_testbench2 is
+end my_testbench2;
 
 -------------------------------------------------------------------------------
--- Architecture for memio Controller Unit
+-- Architecture for CPU11 Testbench 2
 -------------------------------------------------------------------------------
-architecture behavior of my_testbench is
+architecture behavior of my_testbench2 is
   -----------------------------------------------------------------------------
   -- Signals
   -----------------------------------------------------------------------------

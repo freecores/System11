@@ -1,36 +1,43 @@
-JDF E
-// Created by ISE ver 1.0
+JDF G
+// Created by Project Navigator ver 1.0
 PROJECT System11
-DESIGN system11 Normal
-DEVKIT xc2s300e-6pq208
+DESIGN system11
 DEVFAM spartan2e
-FLOW XST VHDL
-STIMULUS testbench1.vhd Normal
-STIMULUS testbench2.vhd Normal
-STIMULUS testbench3.vhd Normal
-MODULE ioport.vhd
-MODSTYLE ioport Normal
-MODULE cpu11.vhd
-MODSTYLE cpu11 Normal
-MODULE rxunit.vhd
-MODSTYLE rxunit Normal
-MODULE swtbug11.vhd
-MODSTYLE boot_rom Normal
-MODULE txunit.vhd
-MODSTYLE txunit Normal
-MODULE datram.vhd
-MODSTYLE dat_ram Normal
-MODULE timer.vhd
-MODSTYLE timer Normal
-MODULE System11.vhd
-MODSTYLE system11 Normal
-MODULE clkunit.vhd
-MODSTYLE clkunit Normal
-MODULE miniUART.vhd
-MODSTYLE miniuart Normal
-
+DEVFAMTIME 315558000
+DEVICE xc2s300e
+DEVICETIME 315558000
+DEVPKG pq208
+DEVPKGTIME 315558000
+DEVSPEED -6
+DEVSPEEDTIME 315558000
+DEVTOPLEVELMODULETYPE HDL
+TOPLEVELMODULETYPETIME 0
+DEVSYNTHESISTOOL XST (VHDL/Verilog)
+SYNTHESISTOOLTIME 0
+DEVSIMULATOR Modelsim
+SIMULATORTIME 0
+DEVGENERATEDSIMULATIONMODEL VHDL
+GENERATEDSIMULATIONMODELTIME 0
+STIMULUS testbench1.vhd
+STIMULUS testbench2.vhd
+STIMULUS testbench3.vhd
+SOURCE ioport.vhd
+SOURCE cpu11.vhd
+SOURCE swtbug11.vhd
+SOURCE datram.vhd
+SOURCE timer.vhd
+SOURCE System11.vhd
+SOURCE rxunit3.vhd
+SOURCE txunit3.vhd
+SOURCE miniUART3.vhd
+STIMULUS testbench4.vhd
+SOURCE tb_ram.vhd
+STIMULUS testbench5.vhd
+DEPASSOC system11 system11.ucf
 [Normal]
-p_impactConfigMode=xstvhd, SPARTAN2E, VHDL.t_impactProgrammingTool, 1062755889, Slave Serial
-
+p_impactConfigMode=xstvhd, spartan2e, Implementation.t_impactProgrammingTool, 1062755889, Slave Serial
+p_ModelSimSimRunTime_tbw=xstvhd, spartan2e, Bencher Waveform.t_MSimulateBehavioralVhdlModel, 315558000, 1000ns
+[STATUS-ALL]
+system11.bitgenGroup=OK,1084885833
 [STRATEGY-LIST]
-Normal=True, 1062754578
+Normal=True

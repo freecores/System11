@@ -14,13 +14,13 @@ library ieee;
    use IEEE.STD_LOGIC_UNSIGNED.ALL;
    use ieee.numeric_std.all;
 
-entity my_testbench is
-end my_testbench;
+entity my_testbench1 is
+end my_testbench1;
 
 -------------------------------------------------------------------------------
--- Architecture for memio Controller Unit
+-- Architecture for Testbench 1
 -------------------------------------------------------------------------------
-architecture behavior of my_testbench is
+architecture behavior of my_testbench1 is
   -----------------------------------------------------------------------------
   -- Signals
   -----------------------------------------------------------------------------
@@ -86,9 +86,7 @@ component cpu11
     data_in:  in	std_logic_vector(7 downto 0);
 	 data_out: out std_logic_vector(7 downto 0);
 	 irq:      in  std_logic;
-	 xirq:     in  std_logic;
-	 test_alu: out std_logic_vector(15 downto 0);
-	 test_cc:  out std_logic_vector(7 downto 0)
+	 xirq:     in  std_logic
   );
 end component;
 
@@ -103,9 +101,7 @@ cpu : cpu11  port map (
     data_in   => cpu_data_in,
 	 data_out  => cpu_data_out,
 	 irq       => uart_irq,
-	 xirq      => timer_irq,
-	 test_alu  => cpu_alu,
-	 test_cc   => cpu_cc
+	 xirq      => timer_irq
   );
 
   -- *** Test Bench - User Defined Section ***
